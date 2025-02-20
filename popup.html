@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CubeCrush – Extension</title>
+  <style>
+    /* Container for the entire game – sized to fit in a small popup */
+    #gameContainer {
+      max-width: 360px;
+      margin: 0 auto;
+      text-align: center;
+      padding: 10px;
+      background: #2c2c2c;
+      border-radius: 8px;
+      box-shadow: 0 0 10px rgba(0,0,0,0.5);
+    }
+    body {
+      background: #444;
+      color: #fff;
+      font-family: sans-serif;
+      margin: 0;
+      padding: 0;
+    }
+    #scoreContainer {
+      margin-bottom: 10px;
+      font-size: 18px;
+    }
+    #scoreContainer > div {
+      margin: 3px 0;
+    }
+    /* The board is an 8x8 grid */
+    #board {
+      display: grid;
+      grid-template-columns: repeat(8, 40px);
+      grid-template-rows: repeat(8, 40px);
+      gap: 2px;
+      margin: 0 auto 10px;
+      background: #555;
+      padding: 5px;
+      position: relative;
+      border-radius: 4px;
+    }
+    .cell {
+      width: 40px;
+      height: 40px;
+      background: #222;
+      border: 1px solid #444;
+      transition: background-color 0.3s, opacity 0.3s;
+      position: relative;
+      border-radius: 4px;
+      box-shadow: inset 0 0 3px rgba(0,0,0,0.5);
+    }
+    /* Preview outlines for valid/invalid placement */
+    .preview {
+      outline: 2px dashed lime;
+    }
+    .invalid-preview {
+      outline: 2px dashed red;
+    }
+    /* Translucent overlay for potential line clears */
+    .line-potential {
+      background-color: rgba(255,255,255,0.2) !important;
+    }
+    /* Animation for line clear */
+    @keyframes lineClear {
+      from { opacity: 1; }
+      to { opacity: 0; }
+    }
+    .line-clear {
+      animation: lineClear 0.5s forwards;
+    }
+    /* Pieces area */
+    #pieces {
+      margin: 10px auto;
+      display: flex;
+      justify-content: center;
+      gap: 10px;
+    }
+    .piece {
+      border: 2px solid #fff;
+      padding: 5px;
+      cursor: grab;
+      background: #666;
+      transition: transform 0.2s, border-color 0.2s;
+      user-select: none;
+    }
+    .piece.selected {
+      border-color: yellow;
+    }
+    .piece:active {
+      cursor: grabbing;
+      transform: scale(1.1);
+    }
+    .piece-cell {
+      width: 20px;
+      height: 20px;
+      background: transparent;
+      border-radius: 3px;
+      box-shadow: 0 0 3px rgba(0,0,0,0.5);
+    }
+    button {
+      padding: 8px 16px;
+      font-size: 16px;
+      cursor: pointer;
+      margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div id="gameContainer">
+    <div id="scoreContainer">
+      <div id="score">Score: 0</div>
+      <div id="highScore">High Score: 0</div>
+    </div>
+    <div id="board"></div>
+    <div id="pieces"></div>
+    <button id="resetButton">Reset Game</button>
+  </div>
+
+  <script>
+    const boardSize = 8;
+    let board = [];
+    let score = 0;
+    let highScore = 0;
+    let currentPieces = [];
+    let draggedPiece = null; // For drag-and-drop
+    let selectedPiece = null; // For click-to-place
+
+    const boardDiv = document.getElementById('board');
+    const piecesDiv = document.getElementById('pieces');
+    const scoreDiv = document.getElementById('score');
+    const highScoreDiv = document.getElementById('highScore');
+    const resetButton = document.getElementById('resetButton');
+
+    // Define piece templates (1 represents a block, 0 is empty)
+    const pieceTemplates = [
+      { shape: [[1]] },
+      { shape: [[1, 1]] },
+      { shape: [[1], [1]] },
+      { shape: [[1, 1, 1]] },
+      { shape: [[1], [1], [1]] },
+      { shape: [[1, 1], [1, 1]] },
+      { shape: [[1, 0], [1, 0], [1, 1]] },
+      { shape: [[1, 1, 1], [0, 1, 0]] }
+    ];
+
+    // Colors for pieces
+    const pieceColors = ['#e74c3c', '#3498db', '#f1c40f', '#2ecc71', '#9b59b6'];
+
+    // Utility: choose a random element from an array
+    function randomChoice(arr) {
+      return arr[Math.floor(Math.random() * arr.length)];
+    }
+
+    // Load high score from localStorage
+    function loadHighScore() {
+      const stored = localStorage.getItem("highScore");
+      highScore = stored ? parseInt(stored) : 0;
+      highScoreDiv.textContent = "High Score: " + highScore;
+    }
+
+    // Update score and high score if needed
+    function updateScore(points) {
+      score += points;
+      scoreDiv.textContent = "Score: " + score;
+      if (score > highScore) {
+        highScore = score;
+        highScoreDiv.textContent = "High Score: " + highScore;
+        localStorage.setItem("highScore", highScore);
+      }
+    }
+
+    // Initialize board as 8x8 grid (all cells null)
+    function initBoard() {
+      board = [];
+      for (let r = 0; r < boardSize; r++) {
+        board[r] = [];
+        for (let c = 0; c < boardSize; c++) {
+          board[r][c] = null;
+        }
+      }
+      renderBoard();
+    }
+
+    // Remove preview classes from board cells
+    function clearPreviews() {
+      document.querySelectorAll('.cell.preview, .cell.invalid-preview, .cell.line-potential').forEach(cell => {
+        cell.classList.remove('preview', 'invalid-preview', 'line-potential');
+      });
+    }
+
+    // Compute which rows/columns would be complete if piece placed at (baseRow, baseCol)
+    function getPotentialClearedLines(piece, baseRow, baseCol) {
+      let completeRows = [];
+      let completeCols = [];
+      let rowCounts = new Array(boardSize).fill(0);
+      let colCounts = new Array(boardSize).fill(0);
+      // Count current filled cells
+      for (let r = 0; r < boardSize; r++) {
+        for (let c = 0; c < boardSize; c++) {
+          if (board[r][c]) {
+            rowCounts[r]++;
+            colCounts[c]++;
+          }
+        }
+      }
+      // Add the piece’s contribution
+      for (let i = 0; i < piece.shape.length; i++) {
+        for (let j = 0; j < piece.shape[i].length; j++) {
+          if (piece.shape[i][j] === 1) {
+            let r = baseRow + i;
+            let c = baseCol + j;
+            if (r < boardSize && c < boardSize) {
+              rowCounts[r]++;
+              colCounts[c]++;
+            }
+          }
+        }
+      }
+      for (let r = 0; r < boardSize; r++) {
+        if (rowCounts[r] === boardSize) completeRows.push(r);
+      }
+      for (let c = 0; c < boardSize; c++) {
+        if (colCounts[c] === boardSize) completeCols.push(c);
+      }
+      return { rows: completeRows, cols: completeCols };
+    }
+
+    // Helper: Place a piece (from either drag or click) and update game state
+    function handlePiecePlacement(piece, row, col) {
+      placePiece(piece, row, col);
+      // Remove piece from available pieces; also clear selectedPiece if used
+      currentPieces = currentPieces.filter(p => p.id !== piece.id);
+      if (selectedPiece && selectedPiece.id === piece.id) {
+        selectedPiece = null;
+      }
+      renderPieces();
+      renderBoard();
+      checkCompletedLines();
+      updateScore(countBlocks(piece));
+      // Generate new pieces if none remain
+      if (currentPieces.length === 0) generatePieces();
+      if (checkGameOver()) {
+        setTimeout(() => {
+          alert("Game Over! Final Score: " + score);
+        }, 100);
+      }
+    }
+
+    // Render the board with drag, mouseover (for click preview), and click events
+    function renderBoard() {
+      boardDiv.innerHTML = '';
+      for (let r = 0; r < boardSize; r++) {
+        for (let c = 0; c < boardSize; c++) {
+          const cell = document.createElement('div');
+          cell.classList.add('cell');
+          cell.dataset.row = r;
+          cell.dataset.col = c;
+          cell.style.backgroundColor = board[r][c] ? board[r][c] : '#222';
+
+          // --- DRAG EVENTS (for drag-and-drop) ---
+          cell.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            clearPreviews();
+            if (!draggedPiece) return;
+            const row = parseInt(cell.dataset.row);
+            const col = parseInt(cell.dataset.col);
+            const valid = canPlacePiece(draggedPiece, row, col);
+            for (let i = 0; i < draggedPiece.shape.length; i++) {
+              for (let j = 0; j < draggedPiece.shape[i].length; j++) {
+                if (draggedPiece.shape[i][j] === 1) {
+                  let targetRow = row + i;
+                  let targetCol = col + j;
+                  const targetCell = boardDiv.querySelector(`.cell[data-row="${targetRow}"][data-col="${targetCol}"]`);
+                  if (targetCell) {
+                    targetCell.classList.add(valid ? 'preview' : 'invalid-preview');
+                  }
+                }
+              }
+            }
+            if (valid) {
+              const potential = getPotentialClearedLines(draggedPiece, row, col);
+              potential.rows.forEach(r => {
+                for (let c = 0; c < boardSize; c++) {
+                  const rowCell = boardDiv.querySelector(`.cell[data-row="${r}"][data-col="${c}"]`);
+                  if (rowCell) rowCell.classList.add('line-potential');
+                }
+              });
+              potential.cols.forEach(c => {
+                for (let r = 0; r < boardSize; r++) {
+                  const colCell = boardDiv.querySelector(`.cell[data-row="${r}"][data-col="${c}"]`);
+                  if (colCell) colCell.classList.add('line-potential');
+                }
+              });
+            }
+          });
+          cell.addEventListener('dragleave', clearPreviews);
+          cell.addEventListener('drop', (e) => {
+            e.preventDefault();
+            clearPreviews();
+            const row = parseInt(cell.dataset.row);
+            const col = parseInt(cell.dataset.col);
+            if (draggedPiece && canPlacePiece(draggedPiece, row, col)) {
+              handlePiecePlacement(draggedPiece, row, col);
+            }
+            draggedPiece = null;
+          });
+          
+          // --- MOUSEOVER EVENTS (for click-to-drop preview) ---
+          cell.addEventListener('mouseover', (e) => {
+            if (!draggedPiece && selectedPiece) {
+              clearPreviews();
+              const row = parseInt(cell.dataset.row);
+              const col = parseInt(cell.dataset.col);
+              const valid = canPlacePiece(selectedPiece, row, col);
+              for (let i = 0; i < selectedPiece.shape.length; i++) {
+                for (let j = 0; j < selectedPiece.shape[i].length; j++) {
+                  if (selectedPiece.shape[i][j] === 1) {
+                    let targetRow = row + i;
+                    let targetCol = col + j;
+                    const targetCell = boardDiv.querySelector(`.cell[data-row="${targetRow}"][data-col="${targetCol}"]`);
+                    if (targetCell) {
+                      targetCell.classList.add(valid ? 'preview' : 'invalid-preview');
+                    }
+                  }
+                }
+              }
+              if (valid) {
+                const potential = getPotentialClearedLines(selectedPiece, row, col);
+                potential.rows.forEach(r => {
+                  for (let c = 0; c < boardSize; c++) {
+                    const rowCell = boardDiv.querySelector(`.cell[data-row="${r}"][data-col="${c}"]`);
+                    if (rowCell) rowCell.classList.add('line-potential');
+                  }
+                });
+                potential.cols.forEach(c => {
+                  for (let r = 0; r < boardSize; r++) {
+                    const colCell = boardDiv.querySelector(`.cell[data-row="${r}"][data-col="${c}"]`);
+                    if (colCell) colCell.classList.add('line-potential');
+                  }
+                });
+              }
+            }
+          });
+          cell.addEventListener('mouseleave', clearPreviews);
+
+          // --- CLICK EVENT (for click-to-drop) ---
+          cell.addEventListener('click', () => {
+            clearPreviews();
+            if (selectedPiece && canPlacePiece(selectedPiece, parseInt(cell.dataset.row), parseInt(cell.dataset.col))) {
+              handlePiecePlacement(selectedPiece, parseInt(cell.dataset.row), parseInt(cell.dataset.col));
+            }
+          });
+          boardDiv.appendChild(cell);
+        }
+      }
+    }
+
+    // Count blocks in a piece
+    function countBlocks(piece) {
+      let count = 0;
+      for (let row of piece.shape) {
+        for (let cell of row) {
+          if (cell === 1) count++;
+        }
+      }
+      return count;
+    }
+
+    // Check if a piece can be placed at (r, c)
+    function canPlacePiece(piece, r, c) {
+      for (let i = 0; i < piece.shape.length; i++) {
+        for (let j = 0; j < piece.shape[i].length; j++) {
+          if (piece.shape[i][j] === 1) {
+            const newRow = r + i;
+            const newCol = c + j;
+            if (newRow < 0 || newRow >= boardSize || newCol < 0 || newCol >= boardSize) return false;
+            if (board[newRow][newCol]) return false;
+          }
+        }
+      }
+      return true;
+    }
+
+    // Place a piece on the board at (r, c)
+    function placePiece(piece, r, c) {
+      for (let i = 0; i < piece.shape.length; i++) {
+        for (let j = 0; j < piece.shape[i].length; j++) {
+          if (piece.shape[i][j] === 1) {
+            board[r + i][c + j] = piece.color;
+          }
+        }
+      }
+    }
+
+    // Check for complete rows or columns, animate and clear them
+    function checkCompletedLines() {
+      let rowsCleared = [];
+      let colsCleared = [];
+      for (let r = 0; r < boardSize; r++) {
+        if (board[r].every(cell => cell !== null)) rowsCleared.push(r);
+      }
+      for (let c = 0; c < boardSize; c++) {
+        let complete = true;
+        for (let r = 0; r < boardSize; r++) {
+          if (!board[r][c]) { complete = false; break; }
+        }
+        if (complete) colsCleared.push(c);
+      }
+      if (rowsCleared.length + colsCleared.length > 0) {
+        rowsCleared.forEach(r => {
+          for (let c = 0; c < boardSize; c++) {
+            const cell = boardDiv.querySelector(`.cell[data-row="${r}"][data-col="${c}"]`);
+            if (cell) cell.classList.add('line-clear');
+          }
+        });
+        colsCleared.forEach(c => {
+          for (let r = 0; r < boardSize; r++) {
+            const cell = boardDiv.querySelector(`.cell[data-row="${r}"][data-col="${c}"]`);
+            if (cell) cell.classList.add('line-clear');
+          }
+        });
+        setTimeout(() => {
+          rowsCleared.forEach(r => { for (let c = 0; c < boardSize; c++) board[r][c] = null; });
+          colsCleared.forEach(c => { for (let r = 0; r < boardSize; r++) board[r][c] = null; });
+          updateScore((rowsCleared.length + colsCleared.length) * 50);
+          renderBoard();
+        }, 500);
+      }
+    }
+
+    // Generate three new random pieces and add them to currentPieces
+    function generatePieces() {
+      for (let i = 0; i < 3; i++) {
+        const template = randomChoice(pieceTemplates);
+        const shape = template.shape.map(row => row.slice());
+        currentPieces.push({
+          id: Date.now() + Math.random(),
+          shape: shape,
+          color: randomChoice(pieceColors)
+        });
+      }
+      renderPieces();
+    }
+
+    // Render the pieces selection area with both click and drag enabled
+    function renderPieces() {
+      piecesDiv.innerHTML = '';
+      currentPieces.forEach(piece => {
+        const pieceDiv = document.createElement('div');
+        pieceDiv.classList.add('piece');
+        // Mark selected piece
+        if (selectedPiece && selectedPiece.id === piece.id) {
+          pieceDiv.classList.add('selected');
+        }
+        pieceDiv.draggable = true;
+        pieceDiv.addEventListener('dragstart', (e) => {
+          draggedPiece = piece;
+          selectedPiece = null;
+          renderPieces();
+          // Suppress default drag image
+          const crt = document.createElement('div');
+          e.dataTransfer.setDragImage(crt, 0, 0);
+        });
+        pieceDiv.addEventListener('dragend', () => {
+          draggedPiece = null;
+          clearPreviews();
+        });
+        // Click-to-select
+        pieceDiv.addEventListener('click', () => {
+          selectedPiece = (selectedPiece && selectedPiece.id === piece.id) ? null : piece;
+          renderPieces();
+        });
+        // Set up mini grid display for the piece
+        const rows = piece.shape.length;
+        const cols = piece.shape[0].length;
+        pieceDiv.style.width = (cols * 22) + 'px';
+        pieceDiv.style.height = (rows * 22) + 'px';
+        pieceDiv.style.display = 'grid';
+        pieceDiv.style.gridTemplateColumns = `repeat(${cols}, 20px)`;
+        pieceDiv.style.gridGap = '2px';
+        for (let i = 0; i < rows; i++) {
+          for (let j = 0; j < cols; j++) {
+            const cellDiv = document.createElement('div');
+            cellDiv.classList.add('piece-cell');
+            if (piece.shape[i][j] === 1) {
+              cellDiv.style.backgroundColor = piece.color;
+            }
+            pieceDiv.appendChild(cellDiv);
+          }
+        }
+        piecesDiv.appendChild(pieceDiv);
+      });
+    }
+
+    // Check if any current piece can be placed on the board
+    function checkGameOver() {
+      for (let piece of currentPieces) {
+        for (let r = 0; r < boardSize; r++) {
+          for (let c = 0; c < boardSize; c++) {
+            if (canPlacePiece(piece, r, c)) return false;
+          }
+        }
+      }
+      return true;
+    }
+
+    // Reset game state
+    function resetGame() {
+      score = 0;
+      currentPieces = [];
+      draggedPiece = null;
+      selectedPiece = null;
+      initBoard();
+      generatePieces();
+      updateScore(0);
+    }
+
+    resetButton.addEventListener('click', resetGame);
+    loadHighScore();
+    resetGame();
+  </script>
+</body>
+</html>
