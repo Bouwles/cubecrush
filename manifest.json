@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "CubeCrush",
+  "version": "1.0",
+  "description": "A compact puzzle game called CubeCrush.",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "CubeCrush"
+  }
+}
